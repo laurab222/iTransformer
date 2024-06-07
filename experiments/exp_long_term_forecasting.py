@@ -9,6 +9,7 @@ import os
 import time
 import warnings
 import numpy as np
+import matplotlib.pyplot as plt
 
 warnings.filterwarnings('ignore')
 
@@ -38,10 +39,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
+        folder_path = './results/vali_results/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
+            for i, (batch_x, batch_x_mark) in enumerate(vali_loader):
                 batch_x = batch_x.float().to(self.device)
+                batch_y = batch_x
+                batch_y_mark = batch_x_mark
                 batch_y = batch_y.float()
 
                 if 'PEMS' in self.args.data or 'Solar' in self.args.data:
@@ -75,6 +82,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 loss = criterion(pred, true)
 
+                for j, elem in enumerate(pred):
+                    fig, axs = plt.subplots(5, 1, sharex=True)
+                    for var in range(5):
+                        axs[var].plot(elem[:,var].detach().cpu().numpy(), label='pred')
+                        axs[var].plot(true[j,:,var].detach().cpu().numpy(), label='true')
+                    axs[0].set_title(f'loss = {loss:.3f}')
+                    plt.legend()
+                    plt.savefig(os.path.join(folder_path, f'vali_batch{i}_elem{j}.png'), dpi=300)
+                    plt.clf()
+
                 total_loss.append(loss)
         total_loss = np.average(total_loss)
         self.model.train()
@@ -106,11 +123,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            for i, (batch_x, batch_x_mark) in enumerate(train_loader):
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
-
+                batch_y = batch_x  
+                batch_y_mark = batch_x_mark
+                
                 batch_y = batch_y.float().to(self.device)
                 if 'PEMS' in self.args.data or 'Solar' in self.args.data:
                     batch_x_mark = None
@@ -193,14 +212,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         preds = []
         trues = []
-        folder_path = './test_results/' + setting + '/'
+        folder_path = './results/test_results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
+            for i, (batch_x, batch_x_mark) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device)
+                batch_y = batch_x
+                batch_y_mark = batch_x_mark
                 batch_y = batch_y.float().to(self.device)
 
                 if 'PEMS' in self.args.data or 'Solar' in self.args.data:
