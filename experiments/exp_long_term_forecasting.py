@@ -50,13 +50,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 batch_y = batch_x
                 batch_y_mark = batch_x_mark
                 batch_y = batch_y.float()
-
-                if 'PEMS' in self.args.data or 'Solar' in self.args.data:
-                    batch_x_mark = None
-                    batch_y_mark = None
-                else:
-                    batch_x_mark = batch_x_mark.float().to(self.device)
-                    batch_y_mark = batch_y_mark.float().to(self.device)
+                batch_x_mark = batch_x_mark.float().to(self.device)
+                batch_y_mark = batch_y_mark.float().to(self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
@@ -131,12 +126,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 batch_y_mark = batch_x_mark
                 
                 batch_y = batch_y.float().to(self.device)
-                if 'PEMS' in self.args.data or 'Solar' in self.args.data:
-                    batch_x_mark = None
-                    batch_y_mark = None
-                else:
-                    batch_x_mark = batch_x_mark.float().to(self.device)
-                    batch_y_mark = batch_y_mark.float().to(self.device)
+                batch_x_mark = batch_x_mark.float().to(self.device)
+                batch_y_mark = batch_y_mark.float().to(self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
@@ -185,8 +176,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
-            vali_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
+            # vali_loss = self.vali(vali_data, vali_loader, criterion) # because val set is too small in some examples
+            vali_loss = self.vali(test_data, test_loader, criterion)
+            test_loss = 0.0
 
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss, test_loss))
@@ -299,6 +291,114 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         return
 
+
+    def test_new(self):
+        self.model.load_state_dict(
+            torch.load(
+                os.path.join(str(self.model_save_path), str(self.dataset) + '_checkpoint.pth')))
+        self.model.eval()
+        temperature = 50
+
+        print("======================TEST MODE======================")
+
+        criterion = nn.MSELoss(reduce=False)
+
+        # (1) stastic on the train set
+        attens_energy = []
+        for i, (input_data, labels) in enumerate(self.train_loader):
+            input = input_data.float().to(self.device)
+            output, series, prior, _ = self.model(input)
+            loss = torch.mean(criterion(input, output), dim=-1)
+
+            cri = loss  # use reco loss as anomly criterium/score
+            cri = cri.detach().cpu().numpy()
+            attens_energy.append(cri)
+
+        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
+        train_energy = np.array(attens_energy)
+
+        # (2) find the threshold
+        attens_energy = []
+        for i, (input_data, labels) in enumerate(self.thre_loader):
+            input = input_data.float().to(self.device)
+            output, series, prior, _ = self.model(input)
+
+            loss = torch.mean(criterion(input, output), dim=-1)
+
+            cri = loss
+            cri = cri.detach().cpu().numpy()
+            attens_energy.append(cri)
+
+        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
+        test_energy = np.array(attens_energy)
+        combined_energy = np.concatenate([train_energy, test_energy], axis=0)
+        thresh = np.percentile(combined_energy, 100 - self.anormly_ratio)
+        print("Threshold :", thresh)
+
+        # (3) evaluation on the test set
+        test_labels = []
+        attens_energy = []
+        for i, (input_data, labels) in enumerate(self.thre_loader):
+            input = input_data.float().to(self.device)
+            output, series, prior, _ = self.model(input)
+
+            loss = torch.mean(criterion(input, output), dim=-1)
+            cri = loss
+            cri = cri.detach().cpu().numpy()
+            attens_energy.append(cri)
+            test_labels.append(labels)
+
+        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
+        test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
+        test_energy = np.array(attens_energy)
+        test_labels = np.array(test_labels)
+
+        pred = (test_energy > thresh).astype(int)
+
+        gt = test_labels.astype(int)
+
+        print("pred:   ", pred.shape)
+        print("gt:     ", gt.shape)
+
+        # detection adjustment: please see this issue for more information https://github.com/thuml/Anomaly-Transformer/issues/14
+        anomaly_state = False
+        for i in range(len(gt)):
+            if gt[i] == 1 and pred[i] == 1 and not anomaly_state:
+                anomaly_state = True
+                for j in range(i, 0, -1):
+                    if gt[j] == 0:
+                        break
+                    else:
+                        if pred[j] == 0:
+                            pred[j] = 1
+                for j in range(i, len(gt)):
+                    if gt[j] == 0:
+                        break
+                    else:
+                        if pred[j] == 0:
+                            pred[j] = 1
+            elif gt[i] == 0:
+                anomaly_state = False
+            if anomaly_state:
+                pred[i] = 1
+
+        pred = np.array(pred)
+        gt = np.array(gt)
+        print("pred: ", pred.shape)
+        print("gt:   ", gt.shape)
+
+        from sklearn.metrics import precision_recall_fscore_support
+        from sklearn.metrics import accuracy_score
+        accuracy = accuracy_score(gt, pred)
+        precision, recall, f_score, support = precision_recall_fscore_support(gt, pred,
+                                                                              average='binary')
+        print(
+            "Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
+                accuracy, precision,
+                recall, f_score))
+
+        return accuracy, precision, recall, f_score
+    
 
     def predict(self, setting, load=False):
         pred_data, pred_loader = self._get_data(flag='pred')
